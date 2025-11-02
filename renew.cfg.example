@@ -12,6 +12,10 @@
 # =============================================================================
 # LET'S ENCRYPT SETTINGS
 # =============================================================================
+# Domain name for certificate (default: ESXi hostname)
+# Override only if hostname doesn't match desired certificate domain
+#DOMAIN="your-domain.example.com"
+
 # Let's Encrypt server URL (default: production)
 # Uncomment below line for staging/testing (issues test certificates)
 #DIRECTORY_URL="https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -20,57 +24,58 @@
 # Certificates are renewed this many days before expiration
 #RENEW_DAYS=14
 
-# Domain name for certificate (default: uses ESXi hostname)
-# Override only if hostname doesn't match desired certificate domain
-#DOMAIN=$(hostname -f)
-
 # Challenge type: "http-01" or "dns-01" (default: "http-01")
 #CHALLENGE_TYPE="dns-01"
+
+# Enable debug logging for detailed troubleshooting (default: 0)
+#DEBUG=1
 
 # =============================================================================
 # DNS PROVIDER CONFIGURATION (Required for DNS-01)
 # =============================================================================
 # Primary DNS provider - choose one:
 # Supported: cloudflare, manual
-#DNS_PROVIDER="cloudflare"
-
+#
 #    WARNING: The "manual" provider requires user interaction and will NOT work
 #    with automated renewals (cron jobs). Use only for testing or one-time
 #    certificate generation. For production ESXi deployments, use an automated
-#    provider like cloudflare, route53, gcloud, azure, etc.
+#    provider like cloudflare.
+#
+#DNS_PROVIDER="cloudflare"
 
-# DNS challenge settings
-#DNS_PROPAGATION_WAIT=120        # Seconds to wait for DNS propagation
-#DNS_PROPAGATION_CHECK=1         # Enable active DNS propagation checking (1) or use fixed wait (0)
-#DNS_TIMEOUT=30                  # API request timeout in seconds
-#MAX_RETRIES=3                   # Maximum retry attempts for failed API calls
-#RETRY_DELAY=5                   # Base delay between retries (exponential backoff)
-#DEBUG=0                         # Enable debug logging (0=off, 1=on)
-#DNS_CACHE_TTL=120               # Cache TTL in seconds (2 minutes for ESXi)
+# DNS challenge settings (default: 300 seconds)
+#DNS_MAX_WAIT=300                # Maximum time to wait for DNS propagation (active checking stops when confirmed)
+
 
 # DNS provider-specific settings
 # Uncomment and configure the provider you want to use
 
 # Cloudflare
-# Create an API token at https://dash.cloudflare.com/profile/api-tokens with Zone:Edit permissions
-#CF_API_TOKEN="your-cloudflare-api-token"
+#CF_API_TOKEN="your-cloudflare-api-token"   # Create an API token via https://dash.cloudflare.com/profile/api-tokens with Zone:Edit permissions
+#CF_API_KEY="your-cloudflare-api-key"       # OR use Global API Key (legacy method)
+#CF_EMAIL="your-cloudflare-account-email"   # Required with CF_API_KEY (legacy method)
+#CF_TTL=120                                 # TTL for DNS records (seconds)
+#CF_PROXY=false                             # Enable Cloudflare proxy for records (true/false)
 
-# OR use Global API Key (legacy method)
-#CF_API_KEY="your-cloudflare-api-key"
-#CF_EMAIL="your-cloudflare-account-email"
-
-# Cloudflare-specific settings
-#CF_TTL=120                      # TTL for DNS records (seconds)
-#CF_PROXY=false                  # Enable Cloudflare proxy for records (true/false)
+# Manual DNS (requires user interaction - NOT suitable for automated renewals)
+#MANUAL_AUTO_CONTINUE=false                 # Skip manual prompts during testing (true/false)
+#MANUAL_TTL=120                             # Recommended TTL for manual DNS records (seconds)
 
 # =============================================================================
 # ADVANCED SETTINGS (rarely need to change)
 # =============================================================================
-# File paths for certificates and keys
-# Override only if you need custom file locations
-#ACCOUNTKEY="esxi_account.key"
-#KEY="esxi.key"
-#CSR="esxi.csr"
-#CRT="esxi.crt"
+# CA certificates bundle path (default: $LOCALDIR/ca-certificates.crt)
+#SSL_CERT_FILE="$LOCALDIR/ca-certificates.crt"
+
+# File paths for certificates and keys (defaults shown)
+#ACCOUNTKEY="$LOCALDIR/esxi_account.key"
+#KEY="$LOCALDIR/esxi.key"
+#CSR="$LOCALDIR/esxi.csr"
+#CRT="$LOCALDIR/esxi.crt"
+
+# ESXi SSL certificate locations (defaults shown)
 #VMWARE_CRT="/etc/vmware/ssl/rui.crt"
 #VMWARE_KEY="/etc/vmware/ssl/rui.key"
+
+# ACME challenge directory for HTTP-01 (default: $LOCALDIR/.well-known/acme-challenge)
+#ACMEDIR="$LOCALDIR/.well-known/acme-challenge"

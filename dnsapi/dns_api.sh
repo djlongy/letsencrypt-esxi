@@ -5,7 +5,7 @@
 # Provides standardized interface and common utilities for all DNS providers
 #
 # Usage: dns_api.sh <command> <domain> [txt_value]
-# Commands: add, rm, info, list, test
+# Commands: add, rm, wait, info, list, test
 #
 
 DNSAPIDIR=$(dirname "$(readlink -f "$0")")
@@ -79,12 +79,12 @@ fi
 # DNS API version
 DNS_API_VERSION="1.2.0"
 
-# Default settings that providers can override
-DEFAULT_DNS_TIMEOUT=${DNS_TIMEOUT:-30}
-DEFAULT_TTL=${DNS_TTL:-120}
-DEFAULT_PROPAGATION_WAIT=${DNS_PROPAGATION_WAIT:-120}
-DEFAULT_MAX_RETRIES=${MAX_RETRIES:-3}
-DEFAULT_RETRY_DELAY=${RETRY_DELAY:-5}
+# Default settings that providers can override (hardcoded for simplicity)
+DEFAULT_DNS_TIMEOUT=30
+DEFAULT_TTL=120
+DEFAULT_PROPAGATION_WAIT=120
+DEFAULT_MAX_RETRIES=3
+DEFAULT_RETRY_DELAY=5
 
 # Logging functions
 dns_log_debug() {
@@ -479,14 +479,6 @@ dns_extract_error() {
                 error_msg=$(dns_json_get "$response" "errors.0.message")
                 [ -n "$error_msg" ] && echo "$error_msg" && return 0
                 ;;
-            "route53")
-                error_msg=$(dns_json_get "$response" "Error.Message")
-                [ -n "$error_msg" ] && echo "$error_msg" && return 0
-                ;;
-            "digitalocean")
-                error_msg=$(dns_json_get "$response" "message")
-                [ -n "$error_msg" ] && echo "$error_msg" && return 0
-                ;;
         esac
 
         # Generic error field extraction
@@ -635,7 +627,7 @@ dns_init_esxi_environment() {
     dns_log_debug "Initializing ESXi 6.5+ environment"
 
     # ESXi-optimized defaults (memory-based caching only)
-    DNS_CACHE_TTL=${DNS_CACHE_TTL:-120}      # 2 minutes - conservative for ESXi
+    DNS_CACHE_TTL=120                         # 2 minutes - conservative for ESXi
     DNS_USE_FILE_CACHE=0                      # Always disabled for ESXi read-only filesystem
 
     # Check memory constraints specific to ESXi
@@ -652,7 +644,7 @@ dns_init_esxi_environment() {
 }
 
 # Supported DNS providers
-SUPPORTED_PROVIDERS="cloudflare route53 digitalocean namecheap godaddy powerdns duckdns ns1 gcloud azure manual"
+SUPPORTED_PROVIDERS="cloudflare manual"
 
 # Provider loading and validation
 dns_load_provider() {
@@ -806,6 +798,7 @@ dns_cmd_add() {
 
     # Always run in current shell for function scope
     start_time=$(date +%s)
+    dns_log_info "Creating TXT record _acme-challenge.$domain..."
     dns_provider_add "$DNS_PROVIDER" "$domain" "$txt_value"
     add_exit_code=$?
     end_time=$(date +%s)
@@ -818,17 +811,6 @@ dns_cmd_add() {
 
     if [ $add_exit_code -eq 0 ]; then
         dns_log_info "DNS record added successfully"
-
-        # Wait for propagation if configured
-        if [ "${DNS_PROPAGATION_WAIT:-0}" -gt 0 ]; then
-            dns_log_info "Waiting ${DNS_PROPAGATION_WAIT}s for DNS propagation..."
-            if dns_check_propagation "$domain" "$txt_value" "$DNS_PROPAGATION_WAIT"; then
-                dns_log_info "DNS propagation verified"
-            else
-                dns_log_warn "DNS propagation could not be verified, but record was added"
-            fi
-        fi
-
         return 0
     else
         dns_log_error "Failed to add DNS record"
@@ -854,6 +836,7 @@ dns_cmd_rm() {
     fi
 
     dns_log_info "Removing DNS TXT record for $domain using $DNS_PROVIDER"
+    dns_log_info "Cleaning up TXT record _acme-challenge.$domain..."
 
     if dns_provider_rm "$DNS_PROVIDER" "$domain" "$txt_value"; then
         dns_log_info "DNS record removed successfully"
@@ -918,9 +901,38 @@ dns_cmd_list() {
 
     echo "Current Configuration:"
     echo "- DNS_PROVIDER: ${DNS_PROVIDER:-not set}"
-    echo "- DNS_PROPAGATION_WAIT: ${DNS_PROPAGATION_WAIT:-120}s"
-    echo "- DNS_TIMEOUT: ${DNS_TIMEOUT:-30}s"
-    echo "- MAX_RETRIES: ${MAX_RETRIES:-3}"
+    echo "- DNS_MAX_WAIT: ${DNS_MAX_WAIT:-300}s (maximum propagation wait)"
+    echo "- DNS_TIMEOUT: ${DEFAULT_DNS_TIMEOUT}s (hardcoded)"
+    echo "- MAX_RETRIES: ${DEFAULT_MAX_RETRIES} (hardcoded)"
+}
+
+dns_cmd_wait() {
+    domain="$1"
+    txt_value="$2"
+
+    if ! dns_validate_domain "$domain"; then
+        return 1
+    fi
+
+    if ! dns_validate_txt_value "$txt_value"; then
+        return 1
+    fi
+
+    # Always use active DNS propagation checking with a reasonable maximum wait
+    max_wait=${DNS_MAX_WAIT:-300}  # 5 minute safety limit
+    check_interval=15  # Check every 15 seconds
+
+    dns_log_info "DNS propagation wait for $domain (TXT: ${txt_value:0:20}...)"
+    dns_log_info "Active DNS propagation checking enabled. Maximum wait: ${max_wait} seconds"
+
+    # Use the existing comprehensive dns_check_propagation function
+    if dns_check_propagation "$domain" "$txt_value" "$max_wait" "$check_interval"; then
+        dns_log_info "DNS propagation confirmed!"
+        return 0
+    else
+        dns_log_warn "DNS propagation check timed out after ${max_wait} seconds, but continuing anyway"
+        return 0  # Don't fail the entire process
+    fi
 }
 
 # Main function
@@ -938,6 +950,7 @@ main() {
         echo "Commands:"
         echo "  add <domain> <token> <key_auth>  - Add TXT record for ACME challenge"
         echo "  rm <domain> <token> <key_auth>   - Remove TXT record"
+        echo "  wait <domain> <token> <key_auth> - Wait for DNS propagation"
         echo "  test                             - Test DNS provider connectivity"
         echo "  info [provider]                  - Show provider information"
         echo "  list                             - List all supported providers"
@@ -980,6 +993,17 @@ main() {
             ;;
         "list")
             dns_cmd_list
+            ;;
+        "wait")
+            if [ -z "$domain" ]; then
+                dns_log_error "Usage: dns_api.sh wait <domain> <token> <key_auth>"
+                return 1
+            fi
+            if [ -z "$TXT_VALUE" ]; then
+                dns_log_error "Failed to calculate TXT value - key authorization required"
+                return 1
+            fi
+            dns_cmd_wait "$domain" "$TXT_VALUE"
             ;;
         *)
             dns_log_error "Unknown command: $command"
