@@ -1,13 +1,13 @@
 # Build w2c-letsencrypt-esxi VIB & Offline Bundle
 
-The `build.sh` bash script includes the commands needed to generate the VIB and Offline Bundle files. It relies on the [lamw/vibauthor](https://hub.docker.com/r/lamw/vibauthor/) Docker container and uses the files in this repository.
+The `build.sh` shell script includes the commands needed to generate the VIB and Offline Bundle files. It relies on the [lamw/vibauthor](https://hub.docker.com/r/lamw/vibauthor/) Docker container and uses the files in this repository.
 
 After copying all files to the container, `create_vib.sh` runs in the container to actually build the ESXi bundle.
 
 Here is a sample output of the script:
 
 ```bash
-/bin/bash ./build.sh
+/bin/sh ./build.sh
 
 Untagged: letsencrypt-esxi:latest
 Deleted: sha256:3009ff3662db9c3b60157bc0fff1a0c936ec6e301103c5efc50eca113c744b5f
@@ -18,7 +18,7 @@ Step 1/4 : FROM lamw/vibauthor
  ---> a673ffe4ba43
 Step 2/4 : COPY . letsencrypt-esxi
  ---> 6197d7c06029
-Step 3/4 : RUN /bin/bash letsencrypt-esxi/build/create_vib.sh
+Step 3/4 : RUN /bin/sh letsencrypt-esxi/build/create_vib.sh
  ---> Running in 3f6f149cfed4
 WARNING: extensibility rules check failed, but was ignored because of --force.
 VIB (web-wack-creations_bootbank_w2c-letsencrypt-esxi_1.0.0-0.0.0) failed a check of extensibility rules for acceptance level 'community': [u'(line 23: col 0) Element vib failed to validate content'].
@@ -55,7 +55,7 @@ Payloads:
                                                sha-1 76834e1ea72f6e306d10a411eccc777faa2e8ddf
 Removing intermediate container 3f6f149cfed4
  ---> f2f14c706557
-Step 4/4 : CMD ["/bin/bash"]
+Step 4/4 : CMD ["/bin/sh"]
  ---> Running in fc567d964e69
 Removing intermediate container fc567d964e69
  ---> 5c3b069e2f7a

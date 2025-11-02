@@ -4,7 +4,13 @@
 # Released under the GNU GPLv3 License.
 
 DOMAIN=$(hostname -f)
-LOCALDIR=$(dirname "$(readlink -f "$0")")
+# ESXi-compatible path resolution - fallback if readlink -f is not available
+if readlink -f "$0" >/dev/null 2>&1; then
+  LOCALDIR=$(dirname "$(readlink -f "$0")")
+else
+  # Fallback for BusyBox versions without readlink -f
+  LOCALDIR=$(cd "$(dirname "$0")" && pwd)
+fi
 LOCALSCRIPT=$(basename "$0")
 
 # Config persistence logic: backup and restore renew.cfg
@@ -22,8 +28,22 @@ fi
 #   - Keep up to two backup versions: .bak (latest), .bak.old (previous)
 if [ -f "$CONFIG" ]; then
   if [ -f "$CONFIG_BAK" ]; then
-    if [ "$CONFIG" -nt "$CONFIG_BAK" ]; then
-      # Remove oldest backup if present, rotate current backup, then update
+    # ESXi/BusyBox compatible timestamp comparison
+    # Use ls -l timestamps instead of -nt operator which may not be supported
+    config_time=$(ls -l "$CONFIG" 2>/dev/null | awk '{print $6 " " $7 " " $8}')
+    backup_time=$(ls -l "$CONFIG_BAK" 2>/dev/null | awk '{print $6 " " $7 " " $8}')
+
+    # If we can't get timestamps, always update backup to be safe
+    if [ -n "$config_time" ] && [ -n "$backup_time" ]; then
+      # Simple comparison: if config and backup times differ, update backup
+      if [ "$config_time" != "$backup_time" ]; then
+        # Remove oldest backup if present, rotate current backup, then update
+        [ -f "$CONFIG_BAK_OLD" ] && rm -f "$CONFIG_BAK_OLD"
+        mv "$CONFIG_BAK" "$CONFIG_BAK_OLD"
+        cp "$CONFIG" "$CONFIG_BAK"
+      fi
+    else
+      # Fallback: always update if we can't determine timestamps
       [ -f "$CONFIG_BAK_OLD" ] && rm -f "$CONFIG_BAK_OLD"
       mv "$CONFIG_BAK" "$CONFIG_BAK_OLD"
       cp "$CONFIG" "$CONFIG_BAK"
@@ -82,7 +102,12 @@ fi
 
 # Add a cronjob for auto renewal. The script is run once a week on Sunday at 00:00
 if ! grep -q "$LOCALDIR/$LOCALSCRIPT" /var/spool/cron/crontabs/root; then
-  kill -sighup "$(pidof crond)" 2>/dev/null
+  # Try to signal crond - use pidof if available, otherwise try killall
+  if which pidof >/dev/null 2>&1; then
+    kill -sighup "$(pidof crond)" 2>/dev/null
+  elif which killall >/dev/null 2>&1; then
+    killall -HUP crond 2>/dev/null
+  fi
   echo "0    0    *   *   0   /bin/sh $LOCALDIR/$LOCALSCRIPT" >> /var/spool/cron/crontabs/root
   crond
 fi
@@ -186,8 +211,15 @@ if [ "$CHALLENGE_TYPE" = "http-01" ]; then
   fi
   # Enable outbound HTTP client for ACME communication (consolidated)
   enable_httpclient_firewall
-  # Start HTTP server on port 8120 for HTTP validation
-  python3 -m "http.server" 8120 &
+  # Start HTTP server on port 8120 for HTTP validation - try python3 first, fallback to python
+  if which python3 >/dev/null 2>&1; then
+    python3 -m http.server 8120 &
+  elif which python >/dev/null 2>&1; then
+    python -m SimpleHTTPServer 8120 &
+  else
+    log "Error: No Python interpreter available for HTTP server"
+    exit 1
+  fi
   HTTP_SERVER_PID=$!
 
 elif [ "$CHALLENGE_TYPE" = "dns-01" ]; then
@@ -222,12 +254,40 @@ elif [ "$CHALLENGE_TYPE" = "dns-01" ]; then
   log "Using DNS provider: $DNS_PROVIDER"
 fi
 
+# Generate required keys and CSR if they don't exist
+log "Checking for required keys and CSR..."
+
+# Generate account key if it doesn't exist
+if [ ! -r "$ACCOUNTKEY" ]; then
+  log "Generating account key: $ACCOUNTKEY"
+  openssl genrsa 4096 > "$ACCOUNTKEY"
+  chmod 0400 "$ACCOUNTKEY"
+fi
+
+# Generate domain private key if it doesn't exist
+if [ ! -r "$KEY" ]; then
+  log "Generating domain private key: $KEY"
+  openssl genrsa -out "$KEY" 4096
+  chmod 0400 "$KEY"
+fi
+
+# Generate Certificate Signing Request if it doesn't exist or if domain changed
+if [ ! -r "$CSR" ] || ! openssl req -in "$CSR" -noout -text 2>/dev/null | grep -q "CN.*$DOMAIN"; then
+  log "Generating Certificate Signing Request: $CSR"
+  openssl req -new -sha256 -key "$KEY" -subj "/CN=$DOMAIN" -config "./openssl.cnf" > "$CSR"
+fi
+
 # Cert Request (consolidated)
 acme_args="--account-key \"$ACCOUNTKEY\" --csr \"$CSR\" --directory-url \"$DIRECTORY_URL\" --challenge-type \"$CHALLENGE_TYPE\""
 if [ "$CHALLENGE_TYPE" = "http-01" ]; then
   acme_args="$acme_args --acme-dir \"$ACMEDIR\""
 fi
-CERT=$(eval python ./acme_tiny.py $acme_args 2>acme_error.log)
+# Use python3 if available, fallback to python for ESXi compatibility
+if which python3 >/dev/null 2>&1; then
+  CERT=$(eval python3 ./acme_tiny.py $acme_args 2>acme_error.log)
+else
+  CERT=$(eval python ./acme_tiny.py $acme_args 2>acme_error.log)
+fi
 [ "$CHALLENGE_TYPE" = "http-01" ] && [ -n "$HTTP_SERVER_PID" ] && kill -9 "$HTTP_SERVER_PID"
 
 # If an error occurred during certificate issuance, $CERT will be empty
@@ -244,4 +304,13 @@ else
   /sbin/generate-certificates
 fi
 
-for s in /etc/init.d/*; do if $s | grep ssl_reset > /dev/null; then $s ssl_reset; fi; done
+# Restart SSL-aware services using ESXi-compatible approach
+for s in /etc/init.d/*; do
+  # Skip our own script to avoid recursion
+  case "$(basename "$s")" in
+    w2c-letsencrypt) continue ;;
+  esac
+  if [ -x "$s" ] && grep -q "ssl_reset" "$s" 2>/dev/null; then
+    "$s" ssl_reset 2>/dev/null || true
+  fi
+done

@@ -26,7 +26,16 @@ for action in "$@"; do
          sed -i '/\/opt\/w2c-letsencrypt/d' /var/spool/cron/crontabs/root
          sed -i '/acme-challenge/d' /etc/vmware/rhttpproxy/endpoints.conf
          /sbin/generate-certificates
-         for s in /etc/init.d/*; do if $s | grep ssl_reset > /dev/null; then $s ssl_reset; fi; done
+         # Restart SSL-aware services to use new self-signed certificate
+         for s in /etc/init.d/*; do
+           # Skip our own script to avoid recursion
+           case "$(basename "$s")" in
+             w2c-letsencrypt) continue ;;
+           esac
+           if [ -x "$s" ] && grep -q "ssl_reset" "$s" 2>/dev/null; then
+             "$s" ssl_reset 2>/dev/null || true
+           fi
+         done
          ;;
 
       stop)
