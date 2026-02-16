@@ -12,6 +12,12 @@ else
 fi
 LOCALSCRIPT=$(basename "$0")
 
+# Define log function early so it can be used throughout the script
+log() {
+   echo "$@"
+   logger -p daemon.info -t "$0" "$@"
+}
+
 # Config persistence logic: backup and restore renew.cfg
 # This ensures user configuration is not lost during VIB upgrades or accidental deletion.
 CONFIG="$LOCALDIR/renew.cfg"
@@ -23,44 +29,64 @@ if [ ! -d "/etc/w2c-letsencrypt" ]; then
   mkdir -p "/etc/w2c-letsencrypt"
 fi
 
-# If renew.cfg exists and is newer than the backup, rotate backups and update
-#   - Keep up to two backup versions: .bak (latest), .bak.old (previous)
-if [ -f "$CONFIG" ]; then
-  if [ -f "$CONFIG_BAK" ]; then
-    # ESXi/BusyBox compatible timestamp comparison
-    # Use ls -l timestamps instead of -nt operator which may not be supported
-    config_time=$(ls -l "$CONFIG" 2>/dev/null | awk '{print $6 " " $7 " " $8}')
-    backup_time=$(ls -l "$CONFIG_BAK" 2>/dev/null | awk '{print $6 " " $7 " " $8}')
+# Handle backup/restore of renew.cfg to survive VIB upgrades
+# Strategy: Keep up to two backup versions (.bak = latest, .bak.old = previous)
+#
+# Case 1: Local renew.cfg exists
+#   - If backup doesn't exist: create it
+#   - If backup exists and is different: rotate backups and update
+#
+# Case 2: Local renew.cfg doesn't exist
+#   - If backup exists: restore it to local directory
+#
+# Case 3: Load local renew.cfg if it exists
 
-    # If we can't get timestamps, always update backup to be safe
-    if [ -n "$config_time" ] && [ -n "$backup_time" ]; then
-      # Simple comparison: if config and backup times differ, update backup
-      if [ "$config_time" != "$backup_time" ]; then
-        # Remove oldest backup if present, rotate current backup, then update
-        [ -f "$CONFIG_BAK_OLD" ] && rm -f "$CONFIG_BAK_OLD"
-        mv "$CONFIG_BAK" "$CONFIG_BAK_OLD"
-        cp "$CONFIG" "$CONFIG_BAK"
+if [ -f "$CONFIG" ]; then
+  # Local config exists - check if we need to update the backup
+  if [ -f "$CONFIG_BAK" ]; then
+    # Both files exist - check if they're different by comparing MD5 hashes
+    config_md5=$(md5sum "$CONFIG" 2>/dev/null | awk '{print $1}')
+    backup_md5=$(md5sum "$CONFIG_BAK" 2>/dev/null | awk '{print $1}')
+
+    if [ -z "$config_md5" ] || [ -z "$backup_md5" ] || [ "$config_md5" != "$backup_md5" ]; then
+      # Either we couldn't compute hashes or files are different - update backup
+      log "Local renew.cfg differs from backup, updating backup"
+      [ -f "$CONFIG_BAK_OLD" ] && rm -f "$CONFIG_BAK_OLD"
+      mv "$CONFIG_BAK" "$CONFIG_BAK_OLD" && log "Rotated backup: renew.cfg.bak → renew.cfg.bak.old"
+      if cp "$CONFIG" "$CONFIG_BAK"; then
+        log "Updated backup from local renew.cfg"
+      else
+        log "Error: Failed to update backup file"
       fi
     else
-      # Fallback: always update if we can't determine timestamps
-      [ -f "$CONFIG_BAK_OLD" ] && rm -f "$CONFIG_BAK_OLD"
-      mv "$CONFIG_BAK" "$CONFIG_BAK_OLD"
-      cp "$CONFIG" "$CONFIG_BAK"
+      # Files are identical - no update needed
+      log "Local config unchanged, backup is current"
     fi
   else
-    # No backup exists yet, create initial backup
-    cp "$CONFIG" "$CONFIG_BAK"
+    # Backup doesn't exist yet - create initial backup
+    if cp "$CONFIG" "$CONFIG_BAK"; then
+      log "Created initial backup of renew.cfg"
+    else
+      log "Error: Failed to create backup of renew.cfg"
+    fi
+  fi
+else
+  # Local config doesn't exist - check if we can restore from backup
+  if [ -f "$CONFIG_BAK" ]; then
+    if cp "$CONFIG_BAK" "$CONFIG" 2>/dev/null; then
+      log "Restored renew.cfg from backup at $CONFIG_BAK"
+    else
+      log "Error: Failed to restore renew.cfg from backup at $CONFIG_BAK"
+    fi
   fi
 fi
 
-# Restore renew.cfg from backup if the main config is missing but backup exists
-if [ ! -f "$CONFIG" ] && [ -f "$CONFIG_BAK" ]; then
-  cp "$CONFIG_BAK" "$CONFIG"
-fi
-
 # Load user configuration (if available)
-if [ -r "$LOCALDIR/renew.cfg" ]; then
-  . "$LOCALDIR/renew.cfg"
+if [ -r "$CONFIG" ]; then
+  . "$CONFIG"
+  log "Loaded configuration from $CONFIG"
+elif [ -f "$CONFIG" ]; then
+  log "Warning: renew.cfg exists but is not readable (check permissions)"
 fi
 
 # Set defaults for all configurable variables if not defined or overridden incorrectly
@@ -91,11 +117,6 @@ export CHALLENGE_TYPE DNS_PROVIDER DNS_MAX_WAIT \
   CF_API_TOKEN CF_API_KEY CF_EMAIL \
   DIRECTORY_URL CONTACT_EMAIL DEBUG \
   ACCOUNTKEY KEY CSR CRT VMWARE_CRT VMWARE_KEY SSL_CERT_FILE
-
-log() {
-   echo "$@"
-   logger -p daemon.info -t "$0" "$@"
-}
 
 log "Starting certificate renewal.";
 
