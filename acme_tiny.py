@@ -94,8 +94,13 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
             'DNS_PROVIDER': os.environ.get('DNS_PROVIDER', '')
         })
         cmd = ["/bin/sh", api_script, action, domain, token, key_auth_str]
-        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = proc.communicate()
+        try:
+            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # Use communicate with timeout to prevent hanging (30 second default)
+            stdout, stderr = proc.communicate(timeout=max(int(os.environ.get('DNS_MAX_WAIT', 300)) + 60, 90))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise IOError("DNS API script timed out after {0} seconds".format(os.environ.get('DNS_MAX_WAIT', 300) + 60))
         if proc.returncode != 0:
             error_msg = stderr.decode('utf8', errors='replace')
             raise IOError("DNS API failed: {0}".format(error_msg))

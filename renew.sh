@@ -14,7 +14,7 @@ LOCALSCRIPT=$(basename "$0")
 
 # Define log function early so it can be used throughout the script
 log() {
-   echo "$@"
+   echo "$@" >&2
    logger -p daemon.info -t "$0" "$@"
 }
 
@@ -118,7 +118,21 @@ export CHALLENGE_TYPE DNS_PROVIDER DNS_MAX_WAIT \
   DIRECTORY_URL CONTACT_EMAIL DEBUG \
   ACCOUNTKEY KEY CSR CRT VMWARE_CRT VMWARE_KEY SSL_CERT_FILE
 
-log "Starting certificate renewal.";
+# Lockfile for preventing concurrent runs
+LOCKFILE="/var/lock/w2c-letsencrypt.lock"
+
+# Create lockfile or exit if already running
+if [ -f "$LOCKFILE" ]; then
+  log "Another renewal is already in progress. Exiting."
+  exit 1
+fi
+trap "rm -f '$LOCKFILE'" EXIT INT TERM
+if touch "$LOCKFILE" 2>/dev/null; then
+  log "Starting certificate renewal."
+else
+  log "Error: Failed to create lockfile at $LOCKFILE"
+  exit 1
+fi
 
 # Preparation steps
 if [ -z "$DOMAIN" ] || [ "$DOMAIN" = "${DOMAIN/.}" ]; then
@@ -128,9 +142,12 @@ fi
 
 # Add a cronjob for auto renewal. The script is run once a week on Sunday at 00:00
 if ! grep -q "$LOCALDIR/$LOCALSCRIPT" /var/spool/cron/crontabs/root; then
-  kill -sighup "$(pidof crond)" 2>/dev/null
+  crond_pid=$(pidof crond 2>/dev/null)
+  if [ -n "$crond_pid" ]; then
+    kill -sighup "$crond_pid" 2>/dev/null || true
+  fi
   echo "0    0    *   *   0   /bin/sh $LOCALDIR/$LOCALSCRIPT" >> /var/spool/cron/crontabs/root
-  crond
+  crond 2>/dev/null || true
 fi
 
 # Check issuer and expiration date of existing cert
@@ -187,31 +204,6 @@ cleanup_firewall() {
     esxcli network firewall ruleset set -e false -r httpClient 2>/dev/null || true
     log "Restored httpClient firewall rule to disabled"
   fi
-}
-
-# Helper to manage firewall rules consistently
-manage_firewall_rule() {
-  local action="$1"  # "enable" or "disable"
-  local rule="$2"    # rule name
-  local state_var="$3"  # variable name to store original state
-
-  case "$action" in
-    "enable")
-      current_state=$(esxcli network firewall ruleset list | grep "$rule" | awk '{print $NF}')
-      eval "$state_var=\"$current_state\""
-      if [ "$current_state" = "false" ]; then
-        esxcli network firewall ruleset set -e true -r "$rule"
-        log "Enabled $rule firewall rule"
-      fi
-      ;;
-    "disable")
-      eval "original_state=\$$state_var"
-      if [ -n "$original_state" ] && [ "$original_state" = "false" ]; then
-        esxcli network firewall ruleset set -e false -r "$rule" 2>/dev/null || true
-        log "Restored $rule firewall rule to disabled"
-      fi
-      ;;
-  esac
 }
 
 trap cleanup_firewall EXIT INT TERM
@@ -352,26 +344,35 @@ else
 fi
 
 if [ "$CHALLENGE_TYPE" = "http-01" ]; then
-  CERT=$($PYTHON_CMD ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL")
+  CERT=$("$PYTHON_CMD" ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL")
+  ACME_EXIT=$?
 elif [ "$CHALLENGE_TYPE" = "dns-01" ]; then
-  CERT=$($PYTHON_CMD ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL" --challenge-type "$CHALLENGE_TYPE")
+  CERT=$("$PYTHON_CMD" ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL" --challenge-type "$CHALLENGE_TYPE")
+  ACME_EXIT=$?
+else
+  log "Error: Invalid challenge type: $CHALLENGE_TYPE"
+  exit 1
+fi
+
+if [ $ACME_EXIT -ne 0 ]; then
+  log "Error: ACME certificate retrieval failed with exit code $ACME_EXIT"
 fi
 
 # Kill HTTP server if it was started for HTTP-01
 [ "$CHALLENGE_TYPE" = "http-01" ] && [ -n "$HTTP_SERVER_PID" ] && kill -9 "$HTTP_SERVER_PID"
 
 # If an error occurred during certificate issuance, $CERT will be empty
-if [ -n "$CERT" ] ; then
-  echo "$CERT" > "$CRT"
+if [ -n "$CERT" ]; then
+  echo "$CERT" > "$CRT" || { log "Error: Failed to write certificate to $CRT"; exit 1; }
   # Provide the certificate to ESXi
-  cp -p "$LOCALDIR/$KEY" "$VMWARE_KEY"
-  cp -p "$LOCALDIR/$CRT" "$VMWARE_CRT"
+  cp -p "$LOCALDIR/$KEY" "$VMWARE_KEY" || { log "Error: Failed to copy private key to $VMWARE_KEY"; exit 1; }
+  cp -p "$LOCALDIR/$CRT" "$VMWARE_CRT" || { log "Error: Failed to install certificate to $VMWARE_CRT"; exit 1; }
   log "Success: Obtained and installed a certificate from Let's Encrypt."
-elif openssl x509 -checkend 86400 -noout -in "$VMWARE_CRT"; then
+elif openssl x509 -checkend 86400 -noout -in "$VMWARE_CRT" 2>/dev/null; then
   log "Warning: No cert obtained from Let's Encrypt. Keeping the existing one as it is still valid."
 else
   log "Error: No cert obtained from Let's Encrypt. Generating a self-signed certificate."
-  /sbin/generate-certificates
+  /sbin/generate-certificates 2>/dev/null || { log "Error: Failed to generate self-signed certificate"; exit 1; }
 fi
 
 for s in /etc/init.d/*; do
