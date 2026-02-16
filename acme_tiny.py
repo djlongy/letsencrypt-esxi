@@ -94,13 +94,21 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
             'DNS_PROVIDER': os.environ.get('DNS_PROVIDER', '')
         })
         cmd = ["/bin/sh", api_script, action, domain, token, key_auth_str]
+        timeout_seconds = max(int(os.environ.get('DNS_MAX_WAIT', 300)) + 60, 90)
         try:
             proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Use communicate with timeout to prevent hanging (30 second default)
-            stdout, stderr = proc.communicate(timeout=max(int(os.environ.get('DNS_MAX_WAIT', 300)) + 60, 90))
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            raise IOError("DNS API script timed out after {0} seconds".format(os.environ.get('DNS_MAX_WAIT', 300) + 60))
+            # Use communicate with timeout to prevent hanging (Python 2.7 compatible try/except)
+            stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        except Exception as e:
+            # Handle both Python 2.7 (no TimeoutExpired) and Python 3.x (TimeoutExpired exists)
+            exc_type_name = type(e).__name__
+            if exc_type_name == 'TimeoutExpired' or 'timed out' in str(e).lower():
+                try:
+                    proc.kill()
+                except:
+                    pass
+                raise IOError("DNS API script timed out after {0} seconds".format(timeout_seconds))
+            raise
         if proc.returncode != 0:
             error_msg = stderr.decode('utf8', errors='replace')
             raise IOError("DNS API failed: {0}".format(error_msg))

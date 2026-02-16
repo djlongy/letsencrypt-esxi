@@ -112,11 +112,10 @@ if [ "$CHALLENGE_TYPE" = "dns-01" ] && [ "$DNS_MAX_WAIT" -gt 600 ]; then
   DNS_MAX_WAIT=600
 fi
 
-# Export configuration variables
+# Export configuration variables (excluding credentials which will be passed inline to subprocesses)
 export CHALLENGE_TYPE DNS_PROVIDER DNS_MAX_WAIT \
-  CF_API_TOKEN CF_API_KEY CF_EMAIL \
   DIRECTORY_URL CONTACT_EMAIL DEBUG \
-  ACCOUNTKEY KEY CSR CRT VMWARE_CRT VMWARE_KEY SSL_CERT_FILE
+  KEY CSR CRT VMWARE_CRT VMWARE_KEY SSL_CERT_FILE
 
 # Lockfile for preventing concurrent runs
 LOCKFILE="/var/lock/w2c-letsencrypt.lock"
@@ -344,10 +343,14 @@ else
 fi
 
 if [ "$CHALLENGE_TYPE" = "http-01" ]; then
-  CERT=$("$PYTHON_CMD" ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL")
+  # Pass account key only to this subprocess via env
+  CERT=$(env ACCOUNTKEY="$ACCOUNTKEY" \
+    "$PYTHON_CMD" ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL")
   ACME_EXIT=$?
 elif [ "$CHALLENGE_TYPE" = "dns-01" ]; then
-  CERT=$("$PYTHON_CMD" ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL" --challenge-type "$CHALLENGE_TYPE")
+  # Pass account key and DNS provider credentials only to this subprocess via env
+  CERT=$(env ACCOUNTKEY="$ACCOUNTKEY" CF_API_TOKEN="$CF_API_TOKEN" CF_API_KEY="$CF_API_KEY" CF_EMAIL="$CF_EMAIL" \
+    "$PYTHON_CMD" ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL" --challenge-type "$CHALLENGE_TYPE")
   ACME_EXIT=$?
 else
   log "Error: Invalid challenge type: $CHALLENGE_TYPE"
