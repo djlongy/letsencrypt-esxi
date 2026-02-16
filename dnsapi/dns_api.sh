@@ -8,7 +8,13 @@
 # Commands: add, rm, wait, info, list, test
 #
 
-DNSAPIDIR=$(dirname "$(readlink -f "$0")")
+# ESXi-compatible path resolution - fallback if readlink -f is not available
+if readlink -f "$0" >/dev/null 2>&1; then
+  DNSAPIDIR=$(dirname "$(readlink -f "$0")")
+else
+  # Fallback for BusyBox versions without readlink -f
+  DNSAPIDIR=$(cd "$(dirname "$0")" && pwd)
+fi
 LOCALDIR="$DNSAPIDIR/.."
 
 # Parse command line arguments

@@ -23,8 +23,18 @@ for action in "$@"; do
          ;;
 
       remove)
-         sed -i '/\/opt\/w2c-letsencrypt/d' /var/spool/cron/crontabs/root
-         sed -i '/acme-challenge/d' /etc/vmware/rhttpproxy/endpoints.conf
+         # Remove cron entry (BusyBox sed -i compatibility)
+         if [ -f /var/spool/cron/crontabs/root ]; then
+           cp /var/spool/cron/crontabs/root /var/spool/cron/crontabs/root.bak
+           grep -v '/opt/w2c-letsencrypt' /var/spool/cron/crontabs/root.bak > /var/spool/cron/crontabs/root
+           rm -f /var/spool/cron/crontabs/root.bak
+         fi
+         # Remove rhttpproxy entry (BusyBox sed -i compatibility)
+         if [ -f /etc/vmware/rhttpproxy/endpoints.conf ]; then
+           cp /etc/vmware/rhttpproxy/endpoints.conf /etc/vmware/rhttpproxy/endpoints.conf.bak
+           grep -v 'acme-challenge' /etc/vmware/rhttpproxy/endpoints.conf.bak > /etc/vmware/rhttpproxy/endpoints.conf
+           rm -f /etc/vmware/rhttpproxy/endpoints.conf.bak
+         fi
          /sbin/generate-certificates
          # Restart SSL-aware services to use new self-signed certificate
          for s in /etc/init.d/*; do

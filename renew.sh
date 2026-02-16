@@ -340,12 +340,21 @@ if [ ! -r "$CSR" ] || ! openssl req -in "$CSR" -noout -text 2>/dev/null | grep -
   log "Successfully generated CSR for domain: $DOMAIN"
 fi
 
-# Retrieve the certificate
+# Retrieve the certificate - check for python3 first, fallback to python
 export SSL_CERT_FILE
+if which python3 >/dev/null 2>&1; then
+  PYTHON_CMD="python3"
+elif which python >/dev/null 2>&1; then
+  PYTHON_CMD="python"
+else
+  log "Error: No Python interpreter available"
+  exit 1
+fi
+
 if [ "$CHALLENGE_TYPE" = "http-01" ]; then
-  CERT=$(python ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL")
+  CERT=$($PYTHON_CMD ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL")
 elif [ "$CHALLENGE_TYPE" = "dns-01" ]; then
-  CERT=$(python ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL" --challenge-type "$CHALLENGE_TYPE")
+  CERT=$($PYTHON_CMD ./acme_tiny.py --account-key "$ACCOUNTKEY" --csr "$CSR" --acme-dir "$ACMEDIR" --directory-url "$DIRECTORY_URL" --challenge-type "$CHALLENGE_TYPE")
 fi
 
 # Kill HTTP server if it was started for HTTP-01
@@ -370,5 +379,7 @@ for s in /etc/init.d/*; do
   case "$(basename "$s")" in
     w2c-letsencrypt) continue ;;
   esac
-  if $s | grep ssl_reset > /dev/null; then $s ssl_reset; fi
+  if [ -x "$s" ] && grep -q "ssl_reset" "$s" 2>/dev/null; then
+    "$s" ssl_reset 2>/dev/null || true
+  fi
 done
