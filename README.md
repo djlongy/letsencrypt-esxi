@@ -65,9 +65,9 @@ We deploy this VIB via an Ansible playbook. The workflow:
 
 These were hard-won. Read before deploying.
 
-### 1. ESXi can't download from GitHub directly
+### 1. Reboot after VIB install may be needed for wget
 
-ESXi's built-in `wget` does not support HTTPS with GitHub's TLS configuration. You must download the VIB on a control node first and transfer it to ESXi via SCP.
+ESXi's `wget` can fetch HTTPS GitHub URLs, but after initial VIB installation or major changes you may need a reboot before network utilities work reliably. If `wget` fails with TLS errors, reboot the host first.
 
 ### 2. Secure Boot blocks CommunitySupported VIBs
 
